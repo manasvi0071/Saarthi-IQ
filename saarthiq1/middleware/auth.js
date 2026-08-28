@@ -1,4 +1,4 @@
-// backend/middleware/auth.js - UPDATED FOR MINIMAL EMAILS
+// backend/middleware/auth.js - UPDATED FOR RBAC & JWT ROLES (Member 1)
 import jwt from 'jsonwebtoken';
 import { connectDB } from '../db.js';
 
@@ -44,120 +44,205 @@ export function sqlInjectionCheck(req, res, next) {
   if (check(req.body) || check(req.query) || check(req.params)) {
     return res.status(400).json({ 
       success: false,
-      message: 'Potentially unsafe characters detected' 
+      error: 'Potentially unsafe characters detected',
+      statusCode: 400 
     });
   }
 
   next();
 }
 
-// Middleware: Require authentication via JWT
+// Middleware: Parse JWT bearer token (non-fatal)
+export function verifyToken(req, res, next) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+
+  if (!token) {
+    // No token: just move ahead without req.user
+    return next();
+  }
+
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    // Standardize req.user payload shape used across app
+    req.user = {
+      id: payload.id,
+      email: payload.email,
+      role: payload.role || payload.department || null,
+      is_admin:
+        payload.is_admin === true ||
+        payload.is_admin === 1 ||
+        (payload.actual_department === 'Admin' && payload.is_admin !== false),
+      department: payload.department,
+      actual_department: payload.actual_department,
+    };
+    next();
+  } catch (err) {
+    console.error('JWT verification error in verifyToken:', err.message);
+    // Do NOT block the request here; let requireAuth handle hard auth
+    next();
+  }
+}
+
+// Middleware: Require authentication via JWT (hard guard)
 export function requireAuth(req, res, next) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  
+
   if (!token) {
     return res.status(401).json({ 
       success: false,
-      message: 'Authentication token required' 
+      error: 'Authentication token required',
+      statusCode: 401 
     });
   }
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = payload;
+    req.user = {
+      id: payload.id,
+      email: payload.email,
+      role: payload.role || payload.department || null,
+      is_admin:
+        payload.is_admin === true ||
+        payload.is_admin === 1 ||
+        (payload.actual_department === 'Admin' && payload.is_admin !== false),
+      department: payload.department,
+      actual_department: payload.actual_department,
+    };
     next();
   } catch (err) {
-    console.error('JWT verification error:', err.message);
-    
+    console.error('JWT verification error in requireAuth:', err.message);
+
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ 
         success: false,
-        message: 'Token expired. Please log in again.',
-        expired: true
+        error: 'Token expired. Please log in again.',
+        statusCode: 401 
       });
     }
-    
+
     if (err.name === 'JsonWebTokenError') {
       return res.status(401).json({ 
         success: false,
-        message: 'Invalid token. Please log in again.',
-        invalid: true
+        error: 'Invalid token. Please log in again.',
+        statusCode: 401 
       });
     }
-    
+
     return res.status(401).json({ 
       success: false,
-      message: 'Authentication failed'
+      error: 'Authentication failed',
+      statusCode: 401 
     });
   }
 }
 
-// Middleware: Require admin privileges
+// Middleware: Require admin privileges (legacy-safe)
 export function requireAdmin(req, res, next) {
   try {
-    if (!req.user) return requireAuth(req, res, next);
-    
-    // Check if user has admin privileges
-    const isAdmin = req.user.is_admin === true || req.user.is_admin === 1 || 
-                   (req.user.actual_department === 'Admin' && req.user.is_admin !== false);
-    
+    if (!req.user) {
+      // Ensure token is parsed first
+      return requireAuth(req, res, next);
+    }
+
+    const isAdmin = req.user.is_admin;
+
     if (isAdmin) {
       return next();
     }
-    
+
     return res.status(403).json({ 
       success: false,
-      message: 'Admin access required',
-      userRole: req.user.is_admin ? 'admin' : 'user',
-      userDepartment: req.user.department
+      error: 'Admin access required',
+      statusCode: 403,
+      userRole: req.user.role,
+      userDepartment: req.user.department,
     });
-    
   } catch (err) {
     console.error('Admin check error:', err);
     return res.status(403).json({ 
       success: false,
-      message: 'Admin access required'
+      error: 'Admin access required',
+      statusCode: 403,
     });
   }
 }
+
+// Generic role-based guard
+export function authorizeRoles(...roles) {
+  const allowed = roles.flat();
+
+  return (req, res, next) => {
+    if (!req.user) {
+      return requireAuth(req, res, () => authorizeRoles(...allowed)(req, res, next));
+    }
+
+    const userRole = req.user.role;
+
+    if (!userRole) {
+      return res.status(403).json({
+        success: false,
+        error: 'User role is missing',
+        statusCode: 403,
+      });
+    }
+
+    if (!allowed.includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied for this role',
+        statusCode: 403,
+        userRole,
+        allowedRoles: allowed,
+      });
+    }
+
+    next();
+  };
+}
+
+// Convenience RBAC helpers for team usage
+export const requireRole = {
+  jobSeeker: authorizeRoles('job_seeker'),
+  employer: authorizeRoles('employer'),
+  bdFranchiseRecruitment: authorizeRoles('bd', 'franchisee', 'recruitment'),
+  admin: requireAdmin,
+};
 
 // Password strength validator
 export function validatePasswordStrength(password, mode = 'strict') {
   if (!password || typeof password !== 'string') {
     return 'Password required';
   }
-  
-  // Trim and check minimum length
+
   const trimmedPassword = password.trim();
-  
+
   if (trimmedPassword.length < 8) {
     return 'Password must be at least 8 characters long';
   }
-  
-  // Check for common weak passwords
+
   const weakPasswords = [
     'password', '12345678', 'qwertyui', 'admin123', 'welcome1',
-    'password123', 'abc12345', 'letmein1', 'monkey12', 'sunshine'
+    'password123', 'abc12345', 'letmein1', 'monkey12', 'sunshine',
   ];
-  
+
   if (weakPasswords.includes(trimmedPassword.toLowerCase())) {
     return 'Password is too common. Please choose a stronger password';
   }
-  
+
   const rules = [
     { ok: trimmedPassword.length >= 8, msg: 'At least 8 characters' },
     { ok: /[A-Z]/.test(trimmedPassword), msg: 'One uppercase letter' },
     { ok: /[a-z]/.test(trimmedPassword), msg: 'One lowercase letter' },
     { ok: /[0-9]/.test(trimmedPassword), msg: 'One number' },
-    { ok: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(trimmedPassword), msg: 'One special character' }
+    { ok: /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(trimmedPassword), msg: 'One special character' },
   ];
 
-  const failed = rules.filter(r => !r.ok).map(r => r.msg);
-  
+  const failed = rules.filter((r) => !r.ok).map((r) => r.msg);
+
   if (failed.length === 0) return '';
-  
-  // In 'strict' mode, require all rules; otherwise return first failed rule
+
   if (mode === 'strict') {
     return failed.join(', ');
   } else {
@@ -172,21 +257,19 @@ const IP_ATTEMPT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
 export function bruteForceProtection(req, res, next) {
   const ip = req.ip || req.connection?.remoteAddress || req.headers['x-forwarded-for'] || 'unknown';
-  
+
   if (!ipAttempts.has(ip)) {
     ipAttempts.set(ip, []);
   }
 
-  // Clean old attempts
   const now = Date.now();
-  const attempts = ipAttempts.get(ip).filter(ts => now - ts < IP_ATTEMPT_WINDOW_MS);
+  const attempts = ipAttempts.get(ip).filter((ts) => now - ts < IP_ATTEMPT_WINDOW_MS);
   attempts.push(now);
   ipAttempts.set(ip, attempts);
 
-  // Attach helper object to req.bruteForce
   req.bruteForce = {
     recordFailure: () => {
-      // Already recorded above
+      // already recorded above
     },
     recordSuccess: () => {
       ipAttempts.delete(ip);
@@ -196,18 +279,19 @@ export function bruteForceProtection(req, res, next) {
       if (attempts.length === 0) return 0;
       const oldestAttempt = attempts[0];
       return Math.ceil((oldestAttempt + IP_ATTEMPT_WINDOW_MS - now) / 1000);
-    }
+    },
   };
 
   if (attempts.length > IP_ATTEMPT_LIMIT) {
     const resetTime = Math.ceil((attempts[0] + IP_ATTEMPT_WINDOW_MS - now) / 1000);
-    
-    return res.status(429).json({ 
+
+    return res.status(429).json({
       success: false,
-      message: `Too many requests from your IP. Please try again in ${resetTime} seconds.`,
+      error: `Too many requests from your IP. Please try again in ${resetTime} seconds.`,
+      statusCode: 429,
       retryAfter: resetTime,
       limit: IP_ATTEMPT_LIMIT,
-      window: Math.floor(IP_ATTEMPT_WINDOW_MS / 60000) + ' minutes'
+      window: `${Math.floor(IP_ATTEMPT_WINDOW_MS / 60000)} minutes`,
     });
   }
 
@@ -217,26 +301,24 @@ export function bruteForceProtection(req, res, next) {
 // ============ HELPER FUNCTIONS ============
 
 /**
- * Validate email format
+ * Validate email format (RFC-like simple regex)
  */
 export function validateEmail(email) {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  // RFC 5322-like email regex (simplified)
+  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
   return emailRegex.test(email);
 }
 
 /**
- * Validate phone number (Indian format)
+ * Validate phone number (Indian mobile: 10 digits, starts 6–9)
  */
 export function validatePhone(phone) {
   if (!phone) return false;
-  
-  // Remove all non-digits
+
   const cleanPhone = phone.toString().replace(/\D/g, '');
-  
-  // Check if it's exactly 10 digits and starts with 6-9
+
   if (cleanPhone.length !== 10) return false;
-  
-  // Indian mobile numbers start with 6, 7, 8, or 9
+
   return /^[6-9]\d{9}$/.test(cleanPhone);
 }
 
@@ -245,23 +327,23 @@ export function validatePhone(phone) {
  */
 export function formatPhone(phone) {
   if (!phone) return '';
-  
+
   const cleanPhone = phone.toString().replace(/\D/g, '');
-  
+
   if (cleanPhone.length === 10) {
     return `+91 ${cleanPhone.substring(0, 5)} ${cleanPhone.substring(5)}`;
   }
-  
+
   return phone;
 }
 
 // Clean up IP attempts periodically
 setInterval(() => {
   const now = Date.now();
-  
+
   for (const [ip, attempts] of ipAttempts.entries()) {
-    const filtered = attempts.filter(time => now - time < IP_ATTEMPT_WINDOW_MS);
-    
+    const filtered = attempts.filter((time) => now - time < IP_ATTEMPT_WINDOW_MS);
+
     if (filtered.length === 0) {
       ipAttempts.delete(ip);
     } else {
