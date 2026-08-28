@@ -1,10 +1,6 @@
-// backend/db.js - PRODUCTION READY (Render + DigitalOcean)
+// backend/db.js - PRODUCTION READY (Render + DigitalOcean) WITH USER_TYPE & PASSWORD_RESETS SUPPORT
 import mysql from 'mysql2/promise';
 import 'dotenv/config';
-
-/* =========================================================
-   ENV CHECK
-========================================================= */
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
@@ -12,46 +8,26 @@ if (!process.env.DB_HOST) {
   throw new Error('❌ DB_HOST is not defined');
 }
 
-/* =========================================================
-   SSL CONFIG FOR DIGITALOCEAN
-========================================================= */
-
 let sslConfig = null;
-
-// Uncomment and configure this for DigitalOcean/Render if needed
-// if (IS_PRODUCTION && process.env.DB_SSL_CA) {
-//   sslConfig = {
-//     ca: process.env.DB_SSL_CA
-//   };
-// }
-
-/* =========================================================
-   CREATE CONNECTION POOL
-========================================================= */
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DATABASE,
-  port: Number(process.env.DB_PORT || 3306), // Default MySQL port is 3306, not 25060
+  port: Number(process.env.DB_PORT || 3306),
   ssl: sslConfig || undefined,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
   enableKeepAlive: true,
-  keepAliveInitialDelay: 0
+  keepAliveInitialDelay: 0,
 });
 
-/* =========================================================
-   REPORT SYSTEM TABLE SETUP
-========================================================= */
-
 async function createReportTables(connection) {
-  console.log('🔧 Setting up report system tables...');
+  console.log('🔧 Setting up report & auth system tables...');
 
   try {
-    // Create activity_logs table
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS activity_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -75,7 +51,6 @@ async function createReportTables(connection) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Create contact_views table (this is what your code uses, not report_views)
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS contact_views (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -96,7 +71,6 @@ async function createReportTables(connection) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Create login_logs table
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS login_logs (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -110,20 +84,20 @@ async function createReportTables(connection) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Check and add columns to users table if they don't exist
     const [columns] = await connection.execute(`
       SHOW COLUMNS FROM users 
-      WHERE Field IN ('last_activity', 'total_call_hours', 'login_attempts', 'call_count', 'click_count')
+      WHERE Field IN ('last_activity', 'total_call_hours', 'login_attempts', 'call_count', 'click_count', 'user_type')
     `);
 
-    const existingColumns = columns.map(c => c.Field);
+    const existingColumns = columns.map((c) => c.Field);
 
     const columnsToAdd = [
       { name: 'last_activity', sql: 'TIMESTAMP NULL DEFAULT NULL' },
       { name: 'total_call_hours', sql: "TIME DEFAULT '00:00:00'" },
       { name: 'login_attempts', sql: 'INT DEFAULT 0' },
       { name: 'call_count', sql: 'INT DEFAULT 0' },
-      { name: 'click_count', sql: 'INT DEFAULT 0' }
+      { name: 'click_count', sql: 'INT DEFAULT 0' },
+      { name: 'user_type', sql: "VARCHAR(32) DEFAULT NULL COMMENT 'job_seeker, employer, bd, franchisee, recruitment, admin'" },
     ];
 
     for (const col of columnsToAdd) {
@@ -135,7 +109,16 @@ async function createReportTables(connection) {
       }
     }
 
-    // Create pending_users table
+    await connection.execute(`
+      ALTER TABLE users
+      ADD UNIQUE INDEX IF NOT EXISTS idx_users_email (email),
+      ADD UNIQUE INDEX IF NOT EXISTS idx_users_phone (phone)
+    `).catch((err) => {
+      if (!/Duplicate key name/.test(err.message)) {
+        console.warn('⚠️ Email/phone unique index setup warning:', err.message);
+      }
+    });
+
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS pending_users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -149,7 +132,7 @@ async function createReportTables(connection) {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-// Create api_keys table
+
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS api_keys (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -172,7 +155,6 @@ async function createReportTables(connection) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
-    // Create api_key_usage table
     await connection.execute(`
       CREATE TABLE IF NOT EXISTS api_key_usage (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -189,17 +171,26 @@ async function createReportTables(connection) {
         FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    console.log('✅ Database tables ready');
 
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS password_resets (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        email VARCHAR(255) NOT NULL,
+        token_hash VARCHAR(255) NOT NULL,
+        expires_at DATETIME NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        used_at DATETIME,
+        INDEX idx_email (email),
+        INDEX idx_token_hash (token_hash)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    console.log('✅ Database tables ready (reports, auth, password_resets, user_type)');
   } catch (err) {
     console.error('❌ Table setup failed:', err.message);
     throw err;
   }
 }
-
-/* =========================================================
-   CONNECT DB
-========================================================= */
 
 export async function connectDB() {
   let connection;
@@ -215,7 +206,6 @@ export async function connectDB() {
 
     connection.release();
     return pool;
-
   } catch (err) {
     console.error('❌ Database connection error:', err.message);
 
