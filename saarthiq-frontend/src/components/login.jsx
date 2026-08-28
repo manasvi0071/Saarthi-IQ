@@ -1,11 +1,11 @@
-// src/components/Login.jsx - UPDATED VERSION WITH SIMPLE SERVER BUSY ALERT
+// src/components/Login.jsx - UPDATED FOR ROLE-AWARE EMAIL/MOBILE LOGIN (Member 1)
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, Lock, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Lock, AlertCircle, Phone, Mail } from 'lucide-react';
 import logo from '../assets/logo.png';
 
 const Login = () => {
-  const [formData, setFormData] = useState({ email: '', password: '' });
+  const [formData, setFormData] = useState({ identifier: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -18,83 +18,76 @@ const Login = () => {
     remainingAttempts: 3,
     maxAttempts: 3,
     locked: false,
-    warning: ''
+    warning: '',
   });
-  
+
   const [serverBusy, setServerBusy] = useState(false);
-  
+
   const navigate = useNavigate();
 
-  // Clean up any stale sessions on component mount
+  const API_URL = import.meta.env.VITE_API_URL;
+
   useEffect(() => {
     const cleanup = async () => {
       const connectionId = localStorage.getItem('connectionId');
       const token = localStorage.getItem('token');
-      
-      // Clean up if there's a connectionId but no token (stale session)
+
       if (connectionId && !token) {
         console.log('Cleaning up stale session');
         await handleLogout();
       }
-      
-      // Also clean up if user navigates to login page directly
-      // Clear all local storage to start fresh
+
       localStorage.clear();
     };
-    
+
     cleanup();
   }, []);
 
-  // Check server connection status on mount and periodically
   useEffect(() => {
     fetchConnectionStatus();
-    const interval = setInterval(fetchConnectionStatus, 15000); // Check every 15 seconds
-    
+    const interval = setInterval(fetchConnectionStatus, 15000);
+
     return () => clearInterval(interval);
   }, []);
 
   const handleLogout = async () => {
     const connectionId = localStorage.getItem('connectionId');
     const token = localStorage.getItem('token');
-    
+
     if (connectionId || token) {
       try {
-        await fetch(`${import.meta.env.VITE_API_URL}/api/auth/logout`, {
+        await fetch(`${API_URL}/api/auth/logout`, {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
+            Authorization: token ? `Bearer ${token}` : undefined,
           },
           body: JSON.stringify({ connectionId }),
         });
-        
+
         console.log('Logged out successfully');
       } catch (err) {
         console.error('Logout error:', err);
       }
     }
-    
-    // Clear local storage
+
     localStorage.clear();
   };
 
   const fetchConnectionStatus = async () => {
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/connection-status`,
-        { 
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        }
-      );
-      
+      const response = await fetch(`${API_URL}/api/auth/connection-status`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
       if (response.ok) {
-        const data = await response.json();
-        if (data.connectionStatus) {
-          // Only show alert when limit is reached
-          setServerBusy(data.connectionStatus.isLimitReached);
+        const json = await response.json();
+        const status = json.data?.connectionStatus || json.connectionStatus;
+        if (status) {
+          setServerBusy(status.isLimitReached);
         }
       }
     } catch (err) {
@@ -116,9 +109,8 @@ const Login = () => {
     e.preventDefault();
     setLoading(true);
     setError('');
-    setLoginData(prev => ({ ...prev, warning: '' }));
+    setLoginData((prev) => ({ ...prev, warning: '' }));
 
-    // Check if server is busy before attempting login
     if (serverBusy) {
       setError('Server is busy. Please try again in a few minutes.');
       setLoading(false);
@@ -126,42 +118,40 @@ const Login = () => {
     }
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/login`,
-        {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(formData),
-        }
-      );
+      const response = await fetch(`${API_URL}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(formData),
+      });
 
       const data = await response.json();
 
       if (response.ok) {
-        if (data.require2fa) {
+        const payload = data.data || data;
+
+        if (payload.require2fa) {
           setPartialAuthData({
-            email: data.email,
-            name: data.name
+            email: payload.email || payload.data?.email,
+            name: payload.name || payload.data?.name,
           });
-          
-          await requestOTP(data.email);
+
+          await requestOTP(payload.email || payload.data?.email);
           setRequire2fa(true);
           setLoading(false);
-          
+
           setLoginData({
-            attempts: data.attempts || 0,
-            remainingAttempts: data.remainingAttempts || 3,
+            attempts: payload.attempts || 0,
+            remainingAttempts: payload.remainingAttempts || 3,
             maxAttempts: 3,
             locked: false,
-            warning: ''
+            warning: '',
           });
         } else {
-          await completeLogin(data);
+          await completeLogin(payload);
         }
       } else {
-        // Handle connection limit error
         if (response.status === 503 && data.connectionStatus) {
           setServerBusy(true);
           setError('Server is busy. Please try again in a few minutes.');
@@ -170,17 +160,17 @@ const Login = () => {
           const totalAttempts = data.totalAttempts || 3;
           const remainingAttempts = data.remainingAttempts || 0;
           const isLocked = data.locked || false;
-          
+
           setLoginData({
-            attempts: attempts,
-            remainingAttempts: remainingAttempts,
+            attempts,
+            remainingAttempts,
             maxAttempts: totalAttempts,
             locked: isLocked,
-            warning: data.warning || ''
+            warning: data.warning || '',
           });
-          
-          let errorMessage = data.message || 'Login failed. Please try again.';
-          
+
+          let errorMessage = data.error || data.message || 'Login failed. Please try again.';
+
           if (isLocked) {
             errorMessage = 'Your account is locked. Contact administrator to unlock.';
           } else if (data.pending) {
@@ -188,7 +178,7 @@ const Login = () => {
           } else if (data.blocked) {
             errorMessage = 'Your account has been permanently blocked by administrator.';
           }
-          
+
           setError(errorMessage);
         }
         setLoading(false);
@@ -202,25 +192,23 @@ const Login = () => {
 
   const requestOTP = async (email) => {
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/request-2fa-otp`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email }),
-        }
-      );
+      const response = await fetch(`${API_URL}/api/auth/request-2fa-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
 
       const data = await response.json();
-      
+
       if (response.ok) {
-        if (!data.require2fa) {
+        const payload = data.data || data;
+        if (!payload.require2fa) {
           setRequire2fa(false);
           return false;
         }
         return true;
       } else {
-        setError(data.message || 'Failed to send OTP');
+        setError(data.error || data.message || 'Failed to send OTP');
         return false;
       }
     } catch (err) {
@@ -240,24 +228,22 @@ const Login = () => {
     setError('');
 
     try {
-      const response = await fetch(
-        `${import.meta.env.VITE_API_URL}/api/auth/verify-2fa`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: partialAuthData.email,
-            otp: otp
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/api/auth/verify-2fa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: partialAuthData.email,
+          otp,
+        }),
+      });
 
       const data = await response.json();
 
       if (response.ok) {
-        await completeLogin(data);
+        const payload = data.data || data;
+        await completeLogin(payload);
       } else {
-        setError(data.message || 'Invalid OTP. Please try again.');
+        setError(data.error || data.message || 'Invalid OTP. Please try again.');
         setOtpLoading(false);
       }
     } catch (err) {
@@ -268,59 +254,62 @@ const Login = () => {
   };
 
   const completeLogin = async (data) => {
-    localStorage.setItem('userName', data.name || data.fullname || '');
-    localStorage.setItem('userEmail', data.email || '');
-    localStorage.setItem('userPhone', data.phone || '');
-    localStorage.setItem('userDept', data.department || '');
-    localStorage.setItem('connectionId', data.connectionId || '');
-    
+    const role = data.role || data.user_type || data.department;
+
+    const userPayload = {
+      name: data.name || data.fullname || '',
+      email: data.email || '',
+      phone: data.phone || '',
+      department: data.department || '',
+      id: data.id,
+      role,
+      is_admin:
+        data.is_admin === 1 ||
+        data.is_admin === true ||
+        (typeof data.is_admin === 'string' && data.is_admin.toLowerCase() === 'true'),
+      connectionId: data.connectionId || '',
+    };
+
+    localStorage.setItem('userName', userPayload.name);
+    localStorage.setItem('userEmail', userPayload.email);
+    localStorage.setItem('userPhone', userPayload.phone);
+    localStorage.setItem('userDept', userPayload.department);
+    localStorage.setItem('connectionId', userPayload.connectionId);
+
     if (data.token) localStorage.setItem('token', data.token);
     if (data.employee_id) localStorage.setItem('employeeId', data.employee_id);
     if (data.id) localStorage.setItem('userId', data.id);
 
-    const isAdminValue =
-      data.is_admin === 1 ||
-      data.is_admin === true ||
-      (typeof data.is_admin === 'string' &&
-        data.is_admin.toLowerCase() === 'true');
+    localStorage.setItem('isAdmin', userPayload.is_admin ? 'true' : 'false');
+    localStorage.setItem('can_edit_profile', data.canEditProfile ? '1' : '0');
 
-    localStorage.setItem('isAdmin', isAdminValue ? 'true' : 'false');
-    localStorage.setItem(
-      'can_edit_profile',
-      data.canEditProfile ? '1' : '0'
-    );
-
-    localStorage.setItem(
-      'currentUser',
-      JSON.stringify({
-        name: data.name || data.fullname || '',
-        email: data.email || '',
-        phone: data.phone || '',
-        department: data.department || '',
-        id: data.id,
-        is_admin: isAdminValue,
-        connectionId: data.connectionId || ''
-      })
-    );
+    localStorage.setItem('currentUser', JSON.stringify(userPayload));
 
     setLoading(false);
-    
-    navigate('/dashboard');
+
+    // Role-based redirect
+    if (role === 'job_seeker') {
+      navigate('/dashboard/job-seeker');
+    } else if (role === 'employer') {
+      navigate('/dashboard/employer');
+    } else {
+      navigate('/dashboard');
+    }
   };
 
   const resendOTP = async () => {
     if (!partialAuthData?.email) return;
-    
+
     setOtpLoading(true);
     setError('');
-    
+
     const success = await requestOTP(partialAuthData.email);
-    
+
     if (success) {
       setOtp('');
       setError('New OTP sent to your email');
     }
-    
+
     setOtpLoading(false);
   };
 
@@ -329,6 +318,11 @@ const Login = () => {
     setPartialAuthData(null);
     setOtp('');
     setError('');
+  };
+
+  const isIdentifierMobile = () => {
+    const clean = formData.identifier.replace(/\D/g, '');
+    return clean.length === 10 && /^[6-9]\d{9}$/.test(clean);
   };
 
   return (
@@ -341,10 +335,11 @@ const Login = () => {
         </p>
 
         <p className="text-xs text-gray-600 mb-5 text-center">
-          {require2fa ? 'Enter your 2FA code' : 'Enter your credentials to access your account'}
+          {require2fa
+            ? 'Enter your 2FA code'
+            : 'Login using your Email or Mobile Number'}
         </p>
 
-        {/* Server Busy Alert */}
         {serverBusy && (
           <div className="w-full mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
@@ -361,18 +356,28 @@ const Login = () => {
           <form onSubmit={handleSubmit} className="space-y-4 w-full mt-4">
             <div>
               <label className="block text-xs font-medium text-gray-700 mb-1">
-                Email Address
+                Email or Mobile Number
               </label>
-              <input
-                type="email"
-                name="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="Enter your email"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-600 text-sm disabled:bg-gray-50 disabled:cursor-not-allowed"
-                required
-                disabled={loading || serverBusy}
-              />
+              <div className="relative">
+                {isIdentifierMobile() ? (
+                  <Phone className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" />
+                ) : (
+                  <Mail className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" />
+                )}
+                <input
+                  type="text"
+                  name="identifier"
+                  value={formData.identifier}
+                  onChange={handleChange}
+                  placeholder="you@example.com or 9876543210"
+                  className="w-full pl-9 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-600 text-sm disabled:bg-gray-50 disabled:cursor-not-allowed"
+                  required
+                  disabled={loading || serverBusy}
+                />
+              </div>
+              <p className="text-[11px] text-gray-500 mt-1">
+                You can login using registered email or 10-digit mobile number.
+              </p>
             </div>
 
             <div>
@@ -410,20 +415,20 @@ const Login = () => {
                     Attempt {loginData.attempts} of {loginData.maxAttempts}
                   </span>
                 </div>
-                
+
                 {loginData.remainingAttempts > 0 && (
                   <div className="text-xs text-yellow-700">
                     <div className="font-semibold mb-1">
                       Remaining attempts: {loginData.remainingAttempts}
                     </div>
-                    
+
                     {loginData.remainingAttempts === 1 && (
                       <div className="text-red-600 font-bold flex items-center gap-1">
                         <Lock className="w-3 h-3" />
                         Next failed attempt will lock your account!
                       </div>
                     )}
-                    
+
                     {loginData.remainingAttempts === 2 && (
                       <div className="text-orange-600 font-medium flex items-center gap-1">
                         <Lock className="w-3 h-3" />
@@ -496,7 +501,7 @@ const Login = () => {
               </div>
               <h3 className="text-lg font-bold text-gray-800">Two-Factor Authentication</h3>
               <p className="text-sm text-gray-600 mt-2">
-                A verification code has been sent to<br/>
+                A verification code has been sent to<br />
                 <span className="font-semibold">{partialAuthData?.email}</span>
               </p>
             </div>
@@ -578,7 +583,7 @@ const Login = () => {
           >
             Forgot Password? Reset it here
           </button>
-          
+
           <div className="mt-2 text-xs text-gray-500">
             Having trouble logging in? Contact administrator
           </div>
@@ -594,7 +599,6 @@ const Login = () => {
             Register here
           </button>
         </div>
-
       </div>
     </div>
   );
