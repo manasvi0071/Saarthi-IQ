@@ -22,6 +22,7 @@ import remarkRoutes from './routes/remarks.js';
 import profilesRoutes from './routes/profiles.js'; // ADD THIS LINE
 import usersRouter from './routes/users.js';
 import reportsRouter from './routes/reports.js';
+import employerRouter from './routes/employer.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -413,6 +414,7 @@ app.use('/api/cross-auth', crossAuthRouter);
 app.use('/api/profiles', profilesRoutes); // ADD THIS LINE
 app.use('/api/users', usersRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/employer', employerRouter);
 app.use('/api/email', emailRoutes);
 app.use('/api/api-keys', apiKeysRouter);
 
