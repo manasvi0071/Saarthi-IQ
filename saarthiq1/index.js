@@ -23,6 +23,8 @@ import profilesRoutes from './routes/profiles.js'; // ADD THIS LINE
 import usersRouter from './routes/users.js';
 import reportsRouter from './routes/reports.js';
 import employerRouter from './routes/employer.js';
+import applicationRoutes from './routes/applications.js';
+import interviewRoutes from './routes/interviews.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -417,6 +419,8 @@ app.use('/api/reports', reportsRouter);
 app.use('/api/employer', employerRouter);
 app.use('/api/email', emailRoutes);
 app.use('/api/api-keys', apiKeysRouter);
+app.use('/api/applications', applicationRoutes);
+app.use('/api/interviews', interviewRoutes);
 
 app.get('/api/config', (req, res) => {
   res.json({ apiUrl: process.env.API_URL });

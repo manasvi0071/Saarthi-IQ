@@ -81,16 +81,42 @@ const JobBoard = () => {
     );
   };
 
-  const applyForJob = (job) => {
-    const alreadyApplied = appliedJobs.some(
-      (appliedJob) => appliedJob.id === job.id
-    );
+const [applyingId, setApplyingId] = useState(null);
 
-    if (alreadyApplied) {
-      alert("You have already applied for this job.");
+const applyForJob = async (job) => {
+  const alreadyApplied = appliedJobs.some(
+    (appliedJob) => appliedJob.id === job.id
+  );
+
+  if (alreadyApplied) {
+    alert("You have already applied for this job.");
+    return;
+  }
+
+  setApplyingId(job.id);
+
+  try {
+    const token = localStorage.getItem('token');
+    const API_URL = import.meta.env.VITE_API_URL;
+
+    const response = await fetch(`${API_URL}/api/applications/apply`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ jobId: job.id }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      alert(data.message || 'Failed to apply. Please try again.');
+      setApplyingId(null);
       return;
     }
 
+    // Keep local UI state in sync (same as before)
     const newApplication = {
       ...job,
       appliedDate: new Date().toLocaleDateString("en-GB", {
@@ -101,20 +127,18 @@ const JobBoard = () => {
       status: "Applied",
     };
 
-    const updatedApplications = [
-      ...appliedJobs,
-      newApplication,
-    ];
-
+    const updatedApplications = [...appliedJobs, newApplication];
     setAppliedJobs(updatedApplications);
-
-    localStorage.setItem(
-      "appliedJobs",
-      JSON.stringify(updatedApplications)
-    );
+    localStorage.setItem("appliedJobs", JSON.stringify(updatedApplications));
 
     alert(`Application submitted for ${job.title}`);
-  };
+  } catch (err) {
+    console.error('Apply error:', err);
+    alert('Network error. Please try again.');
+  } finally {
+    setApplyingId(null);
+  }
+};
 
   const filteredJobs = jobs.filter((job) => {
     const searchText = search.toLowerCase();
@@ -260,17 +284,17 @@ const JobBoard = () => {
                       </button>
 
                       <button
-                        type="button"
-                        onClick={() => applyForJob(job)}
-                        disabled={isApplied}
-                        className={`rounded-lg px-5 py-2.5 font-medium text-white ${
-                          isApplied
-                            ? "cursor-not-allowed bg-gray-400"
-                            : "bg-emerald-600 hover:bg-emerald-700"
-                        }`}
-                      >
-                        {isApplied ? "Applied" : "Apply Now"}
-                      </button>
+  type="button"
+  onClick={() => applyForJob(job)}
+  disabled={isApplied || applyingId === job.id}
+  className={`rounded-lg px-5 py-2.5 font-medium text-white ${
+    isApplied
+      ? "cursor-not-allowed bg-gray-400"
+      : "bg-emerald-600 hover:bg-emerald-700"
+  }`}
+>
+  {isApplied ? "Applied" : applyingId === job.id ? "Applying..." : "Apply Now"}
+</button>
 
                     </div>
 

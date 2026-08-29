@@ -185,6 +185,39 @@ async function createReportTables(connection) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
+    // Create applications table
+await connection.execute(`
+  CREATE TABLE IF NOT EXISTS applications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    job_id INT NOT NULL,
+    candidate_id INT NOT NULL,
+    status ENUM('applied','shortlisted','rejected','interview_scheduled') DEFAULT 'applied',
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_job_id (job_id),
+    INDEX idx_candidate_id (candidate_id),
+    INDEX idx_status (status),
+    FOREIGN KEY (candidate_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`);
+
+// Create interviews table
+await connection.execute(`
+  CREATE TABLE IF NOT EXISTS interviews (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    application_id INT NOT NULL,
+    scheduled_time DATETIME NOT NULL,
+    mode ENUM('online','offline') DEFAULT 'online',
+    status ENUM('scheduled','rescheduled','cancelled','completed') DEFAULT 'scheduled',
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_application_id (application_id),
+    INDEX idx_status (status),
+    FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+`);
+
     console.log('✅ Database tables ready (reports, auth, password_resets, user_type)');
   } catch (err) {
     console.error('❌ Table setup failed:', err.message);
