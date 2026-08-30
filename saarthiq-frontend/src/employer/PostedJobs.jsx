@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import JobApplications from "./JobApplications"; // adjust path if needed
+import JobApplications from "./components/JobApplications"; // adjust path if needed
 
 const PostedJobs = () => {
   const navigate = useNavigate();
